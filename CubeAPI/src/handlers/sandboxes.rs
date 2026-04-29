@@ -31,6 +31,23 @@ use crate::{
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+const HOST_MOUNT_METADATA_KEY: &str = "host-mount";
+const HOSTDIR_MOUNT_ANNOTATION_KEY: &str = "hostdir-mount";
+
+fn split_metadata_labels_and_hostdir_annotation(
+    metadata: Option<HashMap<String, String>>,
+    annotations: &mut HashMap<String, String>,
+) -> Option<HashMap<String, String>> {
+    metadata.map(|mut meta| {
+        let host_mount = meta.remove(HOST_MOUNT_METADATA_KEY);
+        let hostdir_mount = meta.remove(HOSTDIR_MOUNT_ANNOTATION_KEY);
+        if let Some(v) = hostdir_mount.or(host_mount) {
+            annotations.insert(HOSTDIR_MOUNT_ANNOTATION_KEY.to_string(), v);
+        }
+        meta
+    })
+}
+
 /// Build a ListedSandbox from a CubeMaster SandboxInfo record.
 fn from_cubemaster_info(s: crate::cubemaster::SandboxInfo) -> crate::models::ListedSandbox {
     use crate::models::ListedSandbox;
@@ -314,16 +331,9 @@ pub async fn create_sandbox(
     );
 
     // Extract host-dir mount config from metadata into annotations so that
-    // CubeMaster's injectHostDirMounts() can pick it up.
-    // The key "host-mount" is a CubeMaster-internal annotation; callers pass
-    // it via E2B metadata because the E2B protocol has no native volume field.
-    const HOSTDIR_MOUNT_KEY: &str = "host-mount";
-    let labels: Option<HashMap<String, String>> = body.metadata.map(|mut meta| {
-        if let Some(v) = meta.remove(HOSTDIR_MOUNT_KEY) {
-            annotations.insert(HOSTDIR_MOUNT_KEY.to_string(), v);
-        }
-        meta
-    });
+    // CubeMaster's injectHostDirMounts() can pick it up. The E2B protocol has
+    // no native volume field, so callers pass this Cube extension via metadata.
+    let labels = split_metadata_labels_and_hostdir_annotation(body.metadata, &mut annotations);
 
     let req = CreateSandboxRequest {
         request_id: Uuid::new_v4().to_string(),
@@ -1071,4 +1081,49 @@ fn build_cubevs_context(
         allow_out,
         deny_out,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_metadata_moves_host_mount_to_hostdir_annotation() {
+        let mut annotations = HashMap::new();
+        let labels = split_metadata_labels_and_hostdir_annotation(
+            Some(HashMap::from([
+                ("host-mount".to_string(), "mount-config".to_string()),
+                ("user".to_string(), "alice".to_string()),
+            ])),
+            &mut annotations,
+        )
+        .expect("labels");
+
+        assert_eq!(
+            annotations.get("hostdir-mount").map(String::as_str),
+            Some("mount-config")
+        );
+        assert_eq!(labels.get("user").map(String::as_str), Some("alice"));
+        assert!(!labels.contains_key("host-mount"));
+    }
+
+    #[test]
+    fn split_metadata_accepts_hostdir_mount_and_prefers_it() {
+        let mut annotations = HashMap::new();
+        let labels = split_metadata_labels_and_hostdir_annotation(
+            Some(HashMap::from([
+                ("host-mount".to_string(), "legacy".to_string()),
+                ("hostdir-mount".to_string(), "canonical".to_string()),
+            ])),
+            &mut annotations,
+        )
+        .expect("labels");
+
+        assert_eq!(
+            annotations.get("hostdir-mount").map(String::as_str),
+            Some("canonical")
+        );
+        assert!(!labels.contains_key("host-mount"));
+        assert!(!labels.contains_key("hostdir-mount"));
+    }
 }

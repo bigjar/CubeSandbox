@@ -17,6 +17,7 @@ import (
 
 const (
 	AnnotationHostDirMount = "hostdir-mount"
+	AnnotationHostMount    = "host-mount"
 )
 
 type HostDirMountOption struct {
@@ -32,16 +33,21 @@ func injectHostDirMounts(ctx context.Context, req *types.CreateCubeSandboxReq) e
 		log.G(ctx).Infof("[hostdir] no annotations, skip")
 		return nil
 	}
-	raw, ok := req.Annotations[AnnotationHostDirMount]
+	annotationKey := AnnotationHostDirMount
+	raw, ok := req.Annotations[annotationKey]
 	if !ok || strings.TrimSpace(raw) == "" {
-		log.G(ctx).Infof("[hostdir] annotation %q absent or empty, skip", AnnotationHostDirMount)
+		annotationKey = AnnotationHostMount
+		raw, ok = req.Annotations[annotationKey]
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		log.G(ctx).Infof("[hostdir] annotation %q/%q absent or empty, skip", AnnotationHostDirMount, AnnotationHostMount)
 		return nil
 	}
-	log.G(ctx).Infof("[hostdir] raw annotation: %s", raw)
+	log.G(ctx).Infof("[hostdir] raw annotation %q: %s", annotationKey, raw)
 
 	var opts []HostDirMountOption
 	if err := json.Unmarshal([]byte(raw), &opts); err != nil {
-		return fmt.Errorf("invalid %q annotation: %w", AnnotationHostDirMount, err)
+		return fmt.Errorf("invalid %q annotation: %w", annotationKey, err)
 	}
 	if len(opts) == 0 {
 		log.G(ctx).Infof("[hostdir] annotation parsed to empty list, skip")
@@ -52,11 +58,11 @@ func injectHostDirMounts(ctx context.Context, req *types.CreateCubeSandboxReq) e
 	for i, o := range opts {
 		if !strings.HasPrefix(o.HostPath, "/") {
 			return fmt.Errorf("%q entry[%d]: hostPath must be an absolute path, got %q",
-				AnnotationHostDirMount, i, o.HostPath)
+				annotationKey, i, o.HostPath)
 		}
 		if !strings.HasPrefix(o.MountPath, "/") {
 			return fmt.Errorf("%q entry[%d]: mountPath must be an absolute path, got %q",
-				AnnotationHostDirMount, i, o.MountPath)
+				annotationKey, i, o.MountPath)
 		}
 	}
 
